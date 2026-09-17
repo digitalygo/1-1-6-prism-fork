@@ -80,6 +80,8 @@ class Stream
                 continue;
             }
 
+            $this->captureMetadata($data);
+
             if ($this->state->shouldEmitStreamStart()) {
                 $this->state
                     ->withMessageId(EventID::generate('msg'))
@@ -253,12 +255,39 @@ class Stream
 
     protected function emitStreamEndEvent(): StreamEndEvent
     {
+        $metadata = $this->state->metadata() ?? [];
+
         return new StreamEndEvent(
             id: EventID::generate(),
             timestamp: time(),
             finishReason: $this->state->finishReason() ?? FinishReason::Stop,
             usage: $this->state->usage() ?? new Usage(0, 0),
+            additionalContent: [
+                ...$metadata,
+                'provider_message_id' => $metadata['provider_message_id'] ?? null,
+                'provider_data' => $metadata['provider_data'] ?? null,
+            ],
         );
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    protected function captureMetadata(array $data): void
+    {
+        $metadata = $this->state->metadata() ?? [];
+
+        $id = $data['id'] ?? null;
+
+        if (is_string($id) && $id !== '') {
+            $metadata['provider_message_id'] = $id;
+        }
+
+        if ($data !== []) {
+            $metadata['provider_data'] = $data;
+        }
+
+        $this->state->withMetadata($metadata);
     }
 
     /**

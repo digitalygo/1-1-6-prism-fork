@@ -20,6 +20,7 @@ use Prism\Prism\Streaming\Events\ThinkingEvent;
 use Prism\Prism\Streaming\Events\ThinkingStartEvent;
 use Prism\Prism\Streaming\Events\ToolCallEvent;
 use Prism\Prism\Streaming\Events\ToolResultEvent;
+use Prism\Prism\ValueObjects\Usage;
 use Tests\Fixtures\FixtureResponse;
 
 beforeEach(function (): void {
@@ -413,4 +414,253 @@ it('sends StreamEndEvent using tools with streaming and max steps = 1', function
 
     $lastEvent = end($events);
     expect($lastEvent)->toBeInstanceOf(StreamEndEvent::class);
+});
+
+it('exposes the provider message id on the stream end event', function (): void {
+    FixtureResponse::fakeStreamResponses('v1/chat/completions', 'openrouter/stream-text-with-a-prompt');
+
+    $response = Prism::text()
+        ->using(Provider::OpenRouter, 'openai/gpt-4-turbo')
+        ->withPrompt('Who are you?')
+        ->asStream();
+
+    $events = [];
+
+    foreach ($response as $event) {
+        $events[] = $event;
+    }
+
+    $lastEvent = end($events);
+
+    expect($lastEvent)->toBeInstanceOf(StreamEndEvent::class)
+        ->and($lastEvent->additionalContent['provider_message_id'])->toBe('gen-12345');
+});
+
+it('exposes the last decoded provider payload on the stream end event', function (): void {
+    FixtureResponse::fakeStreamResponses('v1/chat/completions', 'openrouter/stream-text-with-a-prompt');
+
+    $response = Prism::text()
+        ->using(Provider::OpenRouter, 'openai/gpt-4-turbo')
+        ->withPrompt('Who are you?')
+        ->asStream();
+
+    $events = [];
+
+    foreach ($response as $event) {
+        $events[] = $event;
+    }
+
+    $lastEvent = end($events);
+
+    expect($lastEvent)->toBeInstanceOf(StreamEndEvent::class)
+        ->and($lastEvent->additionalContent['provider_data'])->toBeArray()
+        ->and($lastEvent->additionalContent['provider_data']['id'])->toBe('gen-12345')
+        ->and($lastEvent->additionalContent['provider_data']['object'])->toBe('chat.completion.chunk')
+        ->and($lastEvent->additionalContent['provider_data']['choices'][0]['finish_reason'])->toBe('stop')
+        ->and($lastEvent->additionalContent['provider_data']['usage']['total_tokens'])->toBe(42);
+});
+
+it('defaults the provider message id to null when payloads omit an id', function (): void {
+    Http::fake([
+        '*' => Http::response(
+            "data: {\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4-turbo\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n",
+            200,
+            ['Content-Type' => 'text/event-stream']
+        ),
+    ])->preventStrayRequests();
+
+    $response = Prism::text()
+        ->using(Provider::OpenRouter, 'openai/gpt-4-turbo')
+        ->withPrompt('Who are you?')
+        ->asStream();
+
+    $events = [];
+
+    foreach ($response as $event) {
+        $events[] = $event;
+    }
+
+    $lastEvent = end($events);
+
+    expect($lastEvent)->toBeInstanceOf(StreamEndEvent::class)
+        ->and($lastEvent->additionalContent)->toHaveKey('provider_message_id')
+        ->and($lastEvent->additionalContent['provider_message_id'])->toBeNull();
+});
+
+it('defaults the provider payload to null when the stream has no valid payload', function (): void {
+    Http::fake([
+        '*' => Http::response(
+            ": keep-alive\n\ndata: [DONE]\n\n",
+            200,
+            ['Content-Type' => 'text/event-stream']
+        ),
+    ])->preventStrayRequests();
+
+    $response = Prism::text()
+        ->using(Provider::OpenRouter, 'openai/gpt-4-turbo')
+        ->withPrompt('Who are you?')
+        ->asStream();
+
+    $events = [];
+
+    foreach ($response as $event) {
+        $events[] = $event;
+    }
+
+    $lastEvent = end($events);
+
+    expect($lastEvent)->toBeInstanceOf(StreamEndEvent::class)
+        ->and($lastEvent->additionalContent)->toHaveKey('provider_data')
+        ->and($lastEvent->additionalContent['provider_data'])->toBeNull();
+});
+
+it('preserves the provider id and payload across framing and payloads without an id', function (): void {
+    Http::fake([
+        '*' => Http::response(
+            "data: {\"id\":\"gen-first\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4-turbo\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"
+            .": keep-alive\n\n"
+            ."data: {\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4-turbo\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":\"stop\"}]}\n\n"
+            .": keep-alive\n\n"
+            ."data: null\n\n"
+            ."data: []\n\n"
+            ."data: [DONE]\n\n",
+            200,
+            ['Content-Type' => 'text/event-stream']
+        ),
+    ])->preventStrayRequests();
+
+    $response = Prism::text()
+        ->using(Provider::OpenRouter, 'openai/gpt-4-turbo')
+        ->withPrompt('Who are you?')
+        ->asStream();
+
+    $text = '';
+    $events = [];
+
+    foreach ($response as $event) {
+        $events[] = $event;
+
+        if ($event instanceof TextDeltaEvent) {
+            $text .= $event->delta;
+        }
+    }
+
+    $lastEvent = end($events);
+
+    expect($lastEvent)->toBeInstanceOf(StreamEndEvent::class)
+        ->and($lastEvent->additionalContent['provider_message_id'])->toBe('gen-first')
+        ->and($lastEvent->additionalContent['provider_data']['choices'][0]['finish_reason'])->toBe('stop')
+        ->and($lastEvent->additionalContent['provider_data'])->not->toHaveKey('id')
+        ->and($text)->toBe('Hello world');
+});
+
+it('exposes the provider message id for a tool call stream with max steps one', function (): void {
+    FixtureResponse::fakeStreamResponses('v1/chat/completions', 'openrouter/stream-text-with-tools');
+
+    $weatherTool = Tool::as('weather')
+        ->for('Get weather for a city')
+        ->withStringParameter('city', 'The city name')
+        ->using(fn (string $city): string => "The weather in {$city} is 75°F and sunny");
+
+    $response = Prism::text()
+        ->using(Provider::OpenRouter, 'openai/gpt-4-turbo')
+        ->withTools([$weatherTool])
+        ->withMaxSteps(1)
+        ->withPrompt('What is the weather in San Francisco?')
+        ->asStream();
+
+    $events = [];
+
+    foreach ($response as $event) {
+        $events[] = $event;
+    }
+
+    $lastEvent = end($events);
+
+    expect($lastEvent)->toBeInstanceOf(StreamEndEvent::class)
+        ->and($lastEvent->additionalContent['provider_message_id'])->toBe('gen-tool-1')
+        ->and($lastEvent->additionalContent['provider_data']['id'])->toBe('gen-tool-1');
+});
+
+it('exposes the last step provider message id for multi-step tool streams', function (): void {
+    FixtureResponse::fakeStreamResponses('v1/chat/completions', 'openrouter/stream-text-with-tools');
+
+    $weatherTool = Tool::as('weather')
+        ->for('Get weather for a city')
+        ->withStringParameter('city', 'The city name')
+        ->using(fn (string $city): string => "The weather in {$city} is 75°F and sunny");
+
+    $response = Prism::text()
+        ->using(Provider::OpenRouter, 'openai/gpt-4-turbo')
+        ->withTools([$weatherTool])
+        ->withMaxSteps(3)
+        ->withPrompt('What is the weather in San Francisco?')
+        ->asStream();
+
+    $events = [];
+
+    foreach ($response as $event) {
+        $events[] = $event;
+    }
+
+    $lastEvent = end($events);
+
+    expect($lastEvent)->toBeInstanceOf(StreamEndEvent::class)
+        ->and($lastEvent->additionalContent['provider_message_id'])->toBe('gen-tool-2')
+        ->and($lastEvent->additionalContent['provider_data']['id'])->toBe('gen-tool-2')
+        ->and($lastEvent->additionalContent['provider_data']['usage']['total_tokens'])->toBe(100);
+});
+
+it('preserves the canonical finish reason and usage fallback on the stream end event', function (): void {
+    Http::fake([
+        '*' => Http::response(
+            "data: {\"id\":\"gen-no-usage\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4-turbo\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n"
+            ."data: {\"id\":\"gen-no-usage\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-4-turbo\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+            ."data: [DONE]\n\n",
+            200,
+            ['Content-Type' => 'text/event-stream']
+        ),
+    ])->preventStrayRequests();
+
+    $response = Prism::text()
+        ->using(Provider::OpenRouter, 'openai/gpt-4-turbo')
+        ->withPrompt('Who are you?')
+        ->asStream();
+
+    $events = [];
+
+    foreach ($response as $event) {
+        $events[] = $event;
+    }
+
+    $lastEvent = end($events);
+
+    expect($lastEvent)->toBeInstanceOf(StreamEndEvent::class)
+        ->and($lastEvent->finishReason)->toBe(FinishReason::Stop)
+        ->and($lastEvent->usage)->toBeInstanceOf(Usage::class)
+        ->and($lastEvent->usage->promptTokens)->toBe(0)
+        ->and($lastEvent->usage->completionTokens)->toBe(0);
+});
+
+it('keeps the canonical stream start event shape', function (): void {
+    FixtureResponse::fakeStreamResponses('v1/chat/completions', 'openrouter/stream-text-with-a-prompt');
+
+    $response = Prism::text()
+        ->using(Provider::OpenRouter, 'openai/gpt-4-turbo')
+        ->withPrompt('Who are you?')
+        ->asStream();
+
+    $events = [];
+
+    foreach ($response as $event) {
+        $events[] = $event;
+    }
+
+    $startEvent = $events[0];
+
+    expect($startEvent)->toBeInstanceOf(StreamStartEvent::class)
+        ->and(array_keys($startEvent->toArray()))->toBe(['id', 'timestamp', 'model', 'provider', 'metadata'])
+        ->and($startEvent->metadata)->toBeNull()
+        ->and($startEvent->model)->toBe('openai/gpt-4-turbo')
+        ->and($startEvent->provider)->toBe('openrouter');
 });

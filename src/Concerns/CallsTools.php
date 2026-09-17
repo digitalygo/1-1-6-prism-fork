@@ -227,9 +227,11 @@ trait CallsTools
      */
     protected function resolveTool(string $name, array $tools): Tool
     {
+        $normalizedName = mb_strtolower(trim($name));
+
         try {
             return collect($tools)
-                ->sole(fn (Tool $tool): bool => $tool->name() === $name);
+                ->sole(fn (Tool $tool): bool => mb_strtolower($tool->name()) === $normalizedName);
         } catch (ItemNotFoundException $e) {
             throw PrismException::toolNotFound($name, $e);
         } catch (MultipleItemsFoundException $e) {
