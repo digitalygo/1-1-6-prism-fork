@@ -37,9 +37,9 @@ class Audio
                 'language' => $request->providerOptions('language') ?? null,
                 'prompt' => $request->providerOptions('prompt') ?? null,
                 'response_format' => $request->providerOptions('response_format') ?? null,
+                'diarize' => $request->providerOptions('diarize') ?? null,
                 'temperature' => $request->providerOptions('temperature') ?? null,
                 'timestamp_granularities' => $request->providerOptions('timestamp_granularities') ?? null,
-                'diarize' => $request->providerOptions('diarize') ?? false,
             ]));
 
         if (json_validate($response->body())) {

@@ -72,8 +72,6 @@ class Stream
 
         $text = '';
         $toolCalls = [];
-        $providerMessageId = '';
-        $providerResponse = [];
 
         while (! $response->getBody()->eof()) {
             $data = $this->parseNextDataLine($response->getBody());
@@ -82,22 +80,18 @@ class Stream
                 continue;
             }
 
+            $this->captureMetadata($data);
+
             if ($this->state->shouldEmitStreamStart()) {
                 $this->state
                     ->withMessageId(EventID::generate('msg'))
                     ->markStreamStarted();
 
-                $providerMessageId = $data['id'] ?? null;
-
                 yield new StreamStartEvent(
                     id: EventID::generate(),
                     timestamp: time(),
                     model: $data['model'] ?? $request->model(),
-                    provider: 'openrouter',
-                    metadata: [
-                        'provider_message_id' => $providerMessageId,
-                    ],
-                    messageId: $this->state->messageId()
+                    provider: 'openrouter'
                 );
             }
 
@@ -190,9 +184,9 @@ class Stream
                         delta: $reasoningDelta,
                         reasoningId: $this->state->reasoningId()
                     );
-                }
 
-                continue;
+                    continue;
+                }
             }
 
             $content = $this->extractContentDelta($data);
@@ -248,8 +242,6 @@ class Stream
             if ($usage instanceof Usage) {
                 $this->state->addUsage($usage);
             }
-            $providerResponse = $this->parseNextDataLine($response->getBody());
-            $providerMessageId = $data['id'] ?? null;
         }
 
         $this->state->markStepFinished();
@@ -258,21 +250,44 @@ class Stream
             timestamp: time()
         );
 
-        yield $this->emitStreamEndEvent($providerResponse, $providerMessageId);
+        yield $this->emitStreamEndEvent();
     }
 
-    protected function emitStreamEndEvent(?array $providerResponse, ?string $providerMessageId): StreamEndEvent
+    protected function emitStreamEndEvent(): StreamEndEvent
     {
+        $metadata = $this->state->metadata() ?? [];
+
         return new StreamEndEvent(
             id: EventID::generate(),
             timestamp: time(),
             finishReason: $this->state->finishReason() ?? FinishReason::Stop,
-            usage: $this->state->usage(),
+            usage: $this->state->usage() ?? new Usage(0, 0),
             additionalContent: [
-                'provider_message_id' => $providerMessageId,
-                'provider_data' => $providerResponse,
-            ]
+                ...$metadata,
+                'provider_message_id' => $metadata['provider_message_id'] ?? null,
+                'provider_data' => $metadata['provider_data'] ?? null,
+            ],
         );
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    protected function captureMetadata(array $data): void
+    {
+        $metadata = $this->state->metadata() ?? [];
+
+        $id = $data['id'] ?? null;
+
+        if (is_string($id) && $id !== '') {
+            $metadata['provider_message_id'] = $id;
+        }
+
+        if ($data !== []) {
+            $metadata['provider_data'] = $data;
+        }
+
+        $this->state->withMetadata($metadata);
     }
 
     /**

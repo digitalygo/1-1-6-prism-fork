@@ -16,8 +16,7 @@ readonly class StreamStartEvent extends StreamEvent
         int $timestamp,
         public string $model,           // AI model being used
         public string $provider,        // Provider name (anthropic, openai, etc.)
-        public ?array $metadata = null, // Additional provider-specific metadata
-        public ?string $messageId = null
+        public ?array $metadata = null  // Additional provider-specific metadata
     ) {
         parent::__construct($id, $timestamp);
     }
@@ -34,7 +33,6 @@ readonly class StreamStartEvent extends StreamEvent
     {
         return [
             'id' => $this->id,
-            'message_id' => $this->messageId,
             'timestamp' => $this->timestamp,
             'model' => $this->model,
             'provider' => $this->provider,

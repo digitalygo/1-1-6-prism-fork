@@ -11,12 +11,16 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
+    # The matrix deliberately resolves historical Laravel majors whose published releases
+    # are all advisory-flagged, and Composer still reports advisory information during install.
+    env:
+      COMPOSER_POLICY_ADVISORIES_BLOCK: "false"
     strategy:
       fail-fast: true
       matrix:
         os: [ubuntu-latest]
         php: [8.2, 8.3, 8.4]
-        laravel: [11.*, 12.*]
+        laravel: [11.*, 12.*, 13.*]
         stability: [prefer-lowest, prefer-stable]
         include:
           - laravel: 11.*
@@ -25,6 +29,12 @@ jobs:
           - laravel: 12.*
             testbench: 10.*
             carbon: ^3.8.4
+          - laravel: 13.*
+            testbench: 11.*
+            carbon: ^3.8.4
+        exclude:
+          - php: 8.2
+            laravel: 13.*
 
     name: P${{ matrix.php }} - L${{ matrix.laravel }} - ${{ matrix.stability }} - ${{ matrix.os }}
 

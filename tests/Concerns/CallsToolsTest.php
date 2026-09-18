@@ -2,7 +2,9 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\MultipleItemsFoundException;
 use Prism\Prism\Concerns\CallsTools;
+use Prism\Prism\Exceptions\PrismException;
 use Prism\Prism\Streaming\Events\ArtifactEvent;
 use Prism\Prism\Streaming\Events\ToolResultEvent;
 use Prism\Prism\Tool;
@@ -23,6 +25,11 @@ class CallsToolsTestHandler
     public function stream(array $tools, array $toolCalls, string $messageId, array &$toolResults): Generator
     {
         return $this->callToolsAndYieldEvents($tools, $toolCalls, $messageId, $toolResults);
+    }
+
+    public function resolve(string $name, array $tools): Tool
+    {
+        return $this->resolveTool($name, $tools);
     }
 }
 
@@ -226,6 +233,84 @@ it('collects results incrementally while yielding events', function (): void {
         ->and($toolResults[1]->result)->toBe('second');
 });
 
+it('yields failed ToolResultEvent when default error handler catches validation error', function (): void {
+    $tool = (new Tool)
+        ->as('greet')
+        ->for('Greet a person')
+        ->withStringParameter('name', 'Name to greet')
+        ->using(fn (string $name): string => "Hello, {$name}!");
+
+    $toolCall = new ToolCall(id: 'call-123', name: 'greet', arguments: ['unknown_param' => 'test']);
+
+    $handler = new CallsToolsTestHandler;
+    $toolResults = [];
+    $events = [];
+
+    foreach ($handler->stream([$tool], [$toolCall], 'msg-123', $toolResults) as $event) {
+        $events[] = $event;
+    }
+
+    expect($events)->toHaveCount(1)
+        ->and($events[0])->toBeInstanceOf(ToolResultEvent::class)
+        ->and($events[0]->success)->toBeFalse()
+        ->and($events[0]->error)->toContain('Parameter validation error')
+        ->and($events[0]->toolResult->result)->toContain('Parameter validation error')
+        ->and($toolResults)->toHaveCount(1);
+});
+
+it('yields failed ToolResultEvent when default error handler catches runtime error', function (): void {
+    $tool = (new Tool)
+        ->as('failing_tool')
+        ->for('A tool that fails at runtime')
+        ->using(function (): string {
+            throw new RuntimeException('Something went wrong');
+        });
+
+    $toolCall = new ToolCall(id: 'call-123', name: 'failing_tool', arguments: []);
+
+    $handler = new CallsToolsTestHandler;
+    $toolResults = [];
+    $events = [];
+
+    foreach ($handler->stream([$tool], [$toolCall], 'msg-123', $toolResults) as $event) {
+        $events[] = $event;
+    }
+
+    expect($events)->toHaveCount(1)
+        ->and($events[0])->toBeInstanceOf(ToolResultEvent::class)
+        ->and($events[0]->success)->toBeFalse()
+        ->and($events[0]->error)->toContain('Tool execution error')
+        ->and($events[0]->toolResult->result)->toContain('Something went wrong')
+        ->and($toolResults)->toHaveCount(1);
+});
+
+it('yields failed ToolResultEvent when custom error handler handles error', function (): void {
+    $tool = (new Tool)
+        ->as('custom_fail')
+        ->for('A tool with custom error handler')
+        ->using(function (): string {
+            throw new RuntimeException('Oops');
+        })
+        ->failed(fn (Throwable $e, array $params): string => "Custom error: {$e->getMessage()}");
+
+    $toolCall = new ToolCall(id: 'call-123', name: 'custom_fail', arguments: []);
+
+    $handler = new CallsToolsTestHandler;
+    $toolResults = [];
+    $events = [];
+
+    foreach ($handler->stream([$tool], [$toolCall], 'msg-123', $toolResults) as $event) {
+        $events[] = $event;
+    }
+
+    expect($events)->toHaveCount(1)
+        ->and($events[0])->toBeInstanceOf(ToolResultEvent::class)
+        ->and($events[0]->success)->toBeFalse()
+        ->and($events[0]->error)->toBe('Custom error: Oops')
+        ->and($events[0]->toolResult->result)->toBe('Custom error: Oops')
+        ->and($toolResults)->toHaveCount(1);
+});
+
 it('returns empty results when no tool calls provided', function (): void {
     $tool = (new Tool)->as('test')->for('Test')->using(fn (): string => 'result');
 
@@ -240,4 +325,56 @@ it('returns empty results when no tool calls provided', function (): void {
 
     expect($events)->toBeEmpty()
         ->and($toolResults)->toBeEmpty();
+});
+
+it('resolves a tool by its exact name', function (): void {
+    $tool = (new Tool)->as('weather')->for('Get weather')->using(fn (): string => 'sunny');
+
+    $handler = new CallsToolsTestHandler;
+
+    $resolved = $handler->resolve('weather', [$tool]);
+
+    expect($resolved)->toBe($tool);
+});
+
+it('resolves a tool when the provider name has surrounding whitespace', function (): void {
+    $tool = (new Tool)->as('weather')->for('Get weather')->using(fn (): string => 'sunny');
+
+    $handler = new CallsToolsTestHandler;
+
+    $resolved = $handler->resolve('  weather  ', [$tool]);
+
+    expect($resolved)->toBe($tool);
+});
+
+it('resolves a tool when the provider name has a different letter case', function (): void {
+    $tool = (new Tool)->as('weather')->for('Get weather')->using(fn (): string => 'sunny');
+
+    $handler = new CallsToolsTestHandler;
+
+    $resolved = $handler->resolve('WEATHER', [$tool]);
+
+    expect($resolved)->toBe($tool);
+});
+
+it('throws a controlled Prism exception when declared tool names normalize to the same name', function (): void {
+    $lower = (new Tool)->as('weather')->for('Lowercase')->using(fn (): string => 'lower');
+    $upper = (new Tool)->as('WEATHER')->for('Uppercase')->using(fn (): string => 'upper');
+
+    $handler = new CallsToolsTestHandler;
+
+    foreach ([[$lower, $upper], [$upper, $lower]] as $tools) {
+        $exception = null;
+
+        try {
+            $handler->resolve(' weather ', $tools);
+        } catch (Throwable $e) {
+            $exception = $e;
+        }
+
+        expect($exception)->toBeInstanceOf(PrismException::class)
+            ->and($exception)->not->toBeInstanceOf(MultipleItemsFoundException::class)
+            ->and($exception->getPrevious())->toBeInstanceOf(MultipleItemsFoundException::class)
+            ->and($exception->getMessage())->toContain('Multiple tools with the name');
+    }
 });
