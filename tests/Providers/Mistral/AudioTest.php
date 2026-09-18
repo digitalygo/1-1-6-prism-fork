@@ -139,6 +139,102 @@ describe('Speech-to-Text', function (): void {
         expect($response->additionalContent['segments'])->toHaveCount(2);
     });
 
+    it('can transcribe with diarize parameter', function (): void {
+        FixtureResponse::fakeResponseSequence('audio/transcriptions', 'mistral/speech-to-text-basic');
+
+        $audioFile = Audio::fromBase64(base64_encode('usage-test-audio'), 'audio/flac');
+
+        $response = Prism::audio()
+            ->using('mistral', 'voxtral-mini-latest')
+            ->withInput($audioFile)
+            ->withProviderOptions([
+                'diarize' => true,
+            ])
+            ->asText();
+
+        expect($response->text)->toBe('Hello, this is a test transcription.');
+
+        Http::assertSent(function (Request $request): bool {
+            $data = $request->data();
+
+            $diarizeField = collect($data)->firstWhere('name', 'diarize');
+
+            return str_contains($request->url(), 'audio/transcriptions') &&
+                   $diarizeField && $diarizeField['contents'] === true;
+        });
+    });
+
+    it('does not send diarize when the option is not provided', function (): void {
+        FixtureResponse::fakeResponseSequence('audio/transcriptions', 'mistral/speech-to-text-basic');
+
+        $audioFile = Audio::fromBase64(base64_encode('plain-audio'), 'audio/mp3');
+
+        Prism::audio()
+            ->using('mistral', 'voxtral-mini-latest')
+            ->withInput($audioFile)
+            ->asText();
+
+        Http::assertSent(function (Request $request): bool {
+            $data = $request->data();
+
+            return str_contains($request->url(), 'audio/transcriptions') &&
+                   collect($data)->firstWhere('name', 'diarize') === null;
+        });
+    });
+
+    it('sends diarize as false when explicitly disabled', function (): void {
+        FixtureResponse::fakeResponseSequence('audio/transcriptions', 'mistral/speech-to-text-basic');
+
+        $audioFile = Audio::fromBase64(base64_encode('diarize-disabled-audio'), 'audio/mp3');
+
+        Prism::audio()
+            ->using('mistral', 'voxtral-mini-latest')
+            ->withInput($audioFile)
+            ->withProviderOptions([
+                'diarize' => false,
+            ])
+            ->asText();
+
+        Http::assertSent(function (Request $request): bool {
+            $data = $request->data();
+
+            $diarizeField = collect($data)->firstWhere('name', 'diarize');
+
+            return str_contains($request->url(), 'audio/transcriptions') &&
+                   $diarizeField && $diarizeField['contents'] === false;
+        });
+    });
+
+    it('preserves diarized segments in additional content', function (): void {
+        FixtureResponse::fakeResponseSequence('audio/transcriptions', 'mistral/speech-to-text-diarized');
+
+        $audioFile = Audio::fromBase64(base64_encode('diarized-audio'), 'audio/mp3');
+
+        $response = Prism::audio()
+            ->using('mistral', 'voxtral-mini-latest')
+            ->withInput($audioFile)
+            ->withProviderOptions([
+                'diarize' => true,
+                'response_format' => 'verbose_json',
+            ])
+            ->asText();
+
+        expect($response->text)->toBe('Hello there. How are you?');
+        expect($response->additionalContent['segments'])->toHaveCount(2);
+        expect($response->additionalContent['segments'][0])->toMatchArray([
+            'text' => 'Hello there.',
+            'start' => 0.0,
+            'end' => 1.2,
+            'speaker_id' => 'speaker_1',
+        ]);
+        expect($response->additionalContent['segments'][1])->toMatchArray([
+            'text' => 'How are you?',
+            'start' => 1.4,
+            'end' => 2.7,
+            'speaker_id' => 'speaker_2',
+        ]);
+    });
+
     it('can transcribe with language parameter', function (): void {
         FixtureResponse::fakeResponseSequence('audio/transcriptions', 'mistral/speech-to-text-basic');
 

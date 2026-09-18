@@ -188,6 +188,32 @@ foreach ($segments as $segment) {
 }
 ```
 
+#### Speaker diarization
+
+Enable diarization to label each segment with the speaker who produced it:
+
+```php
+$response = Prism::audio()
+    ->using('mistral', 'voxtral-mini-latest')
+    ->withInput($audioFile)
+    ->withProviderOptions([
+        'diarize' => true,
+        'timestamp_granularities' => ['segment'],
+    ])
+    ->asText();
+
+// Read the speaker, timings, and text for each segment
+$segments = $response->additionalContent['segments'] ?? [];
+foreach ($segments as $segment) {
+    echo "Speaker: " . $segment['speaker_id'] . "\n";
+    echo "Start: " . $segment['start'] . "s\n";
+    echo "End: " . $segment['end'] . "s\n";
+    echo "Text: " . $segment['text'] . "\n";
+}
+```
+
+The `diarize` option is sent to the provider only when supplied.
+
 #### Context and Prompts
 
 Improve transcription accuracy with contextual information:
@@ -283,4 +309,3 @@ $text = $ocrResponse->toText();
 ::: tip
 The OCR endpoint response time can vary depending on the size of the document. We recommend doing this in the background like a queue with a longer timeout.
 :::
-
